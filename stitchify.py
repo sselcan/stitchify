@@ -10,12 +10,13 @@ Pipeline:
   6. Write preview, symbol chart, legend, and metrics
 
 Install:
-  pip install tarraz rembg onnxruntime scikit-learn scikit-image opencv-python-headless pillow
+  pip install tarraz rembg onnxruntime scikit-learn scikit-image opencv-python-headless pillow openai python-dotenv
 
 Examples:
   python stitchify.py photo.jpg                      # full pipeline
   python stitchify.py photo.jpg --no-segment         # plain conversion (baseline)
   python stitchify.py chatgpt_output.png --no-segment --tag gpt
+  python stitchify.py photo.jpg --stylize --no-segment --tag ai   # needs OPENAI_API_KEY in .env
 """
 import argparse
 import json
@@ -29,6 +30,30 @@ from sklearn.cluster import KMeans
 from tarraz.colors import DMC_COLORS
 
 SYMBOLS = list("ABCDEFGHJKLMNPQRSTUVWXYZ123456789@#$%&*+=?")
+
+
+# ---------- 0. optional AI stylization ----------
+DEFAULT_PROMPT = (
+    "Repaint this photo as a simple, minimalistic painting. Keep the main subject and its "
+    "recognizable features; reduce everything else to smooth, flat areas of color with no "
+    "fine texture. Use a limited palette of clearly distinct colors. Keep the composition "
+    "and proportions identical to the photo."
+)
+
+
+def stylize(image_path, prompt, model):
+    """Sends the photo to OpenAI's image edit API. Reads OPENAI_API_KEY from the environment/.env."""
+    import base64
+    import io
+    from dotenv import load_dotenv
+    from openai import OpenAI
+
+    load_dotenv()  # picks up OPENAI_API_KEY from a local .env file, never from the code
+    client = OpenAI()
+    with open(image_path, "rb") as f:
+        resp = client.images.edit(model=model, image=[f], prompt=prompt)
+    data = base64.b64decode(resp.data[0].b64_json)
+    return np.array(Image.open(io.BytesIO(data)).convert("RGB"))
 
 
 # ---------- 1. segmentation ----------
@@ -155,12 +180,23 @@ def main():
     ap.add_argument("--bg-strength", type=float, default=1.5, help="background simplification, 0.5-3")
     ap.add_argument("--seg-model", default="u2net", help="u2netp | u2net | isnet-general-use")
     ap.add_argument("--no-segment", action="store_true", help="skip subject detection (baseline)")
+    ap.add_argument("--stylize", action="store_true", help="AI-repaint the photo first (OpenAI API)")
+    ap.add_argument("--prompt", default=DEFAULT_PROMPT, help="stylization prompt")
+    ap.add_argument("--stylize-model", default="gpt-image-1")
     ap.add_argument("--no-cleanup", action="store_true", help="skip confetti removal")
     ap.add_argument("--tag", default="", help="suffix for output files")
     ap.add_argument("--out", default="out")
     a = ap.parse_args()
 
-    img = np.array(Image.open(a.image).convert("RGB"))
+    Path(a.out).mkdir(exist_ok=True)
+    name = Path(a.image).stem + (f"_{a.tag}" if a.tag else "")
+    prefix = str(Path(a.out) / name)
+
+    if a.stylize:
+        img = stylize(a.image, a.prompt, a.stylize_model)
+        Image.fromarray(img).save(f"{prefix}_stylized.png")  # saved so you only pay once per photo
+    else:
+        img = np.array(Image.open(a.image).convert("RGB"))
     # work at moderate resolution; the grid is tiny anyway
     scale = 800 / max(img.shape[:2])
     if scale < 1:
@@ -176,9 +212,6 @@ def main():
     if not a.no_cleanup:
         idx = remove_confetti(idx)
 
-    Path(a.out).mkdir(exist_ok=True)
-    name = Path(a.image).stem + (f"_{a.tag}" if a.tag else "")
-    prefix = str(Path(a.out) / name)
     if not a.no_segment:
         Image.fromarray(img).save(f"{prefix}_simplified.png")
     render(idx, cols, prefix)
