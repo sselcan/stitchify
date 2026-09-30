@@ -1,0 +1,7 @@
+tarraz
+rembg
+onnxruntime
+scikit-learn
+scikit-image
+opencv-python-headless
+pillow
